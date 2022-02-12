@@ -1,7 +1,9 @@
-spidey
-======
+🕷️spidey
+========
 
 Helper script for running Scrapy spider on Docker.
+
+You can start scraping more easily.
 
 
 ### Dependencies
@@ -14,7 +16,7 @@ Helper script for running Scrapy spider on Docker.
 git clone this project to your local.
 
 ```sh
-$ git clone xxxx
+$ git clone git@github.com:mitsu-ksgr/spidey.git
 $ cd spidey
 ```
 
