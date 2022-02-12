@@ -1,0 +1,7 @@
+#
+# .gitignore for spidey
+#
+outputs/*
+spiders/*
+
+!.gitkeep

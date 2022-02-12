@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+#------------------------------------------------------------------------------
+#
+# spidey ... Scrapy spider on Docker!
+#
+#------------------------------------------------------------------------------
+set -u
+umask 0022
+export LC_ALL=C
+
+
+#
+# Defines
+#
+readonly SCRIPT_NAME=$(basename $0)
+readonly DOCKER_TAG='spidey:latest'
+readonly DOCKER_CONTENT_DIR='./peter'
+readonly DOCKER_USER_NAME="peter"
+
+
+#
+# Usage
+#
+usage() {
+    cat << __EOS__
+Usage:
+    ${SCRIPT_NAME} gen {SPIDER_NAME} {SITE_URL}
+    ${SCRIPT_NAME} run {SPIDER_FILE_PATH}
+    ${SCRIPT_NAME} exec [{COMMANDS}]
+    ${SCRIPT_NAME} bash
+
+Description:
+    Easy run Scrapy spider on Docker.
+
+Commands:
+    gen     Generate scrapy spider file.
+    run     Run scrapy spider.
+    exec    Run scrapy commands.
+    bash    Run /bin/bash on docker container.
+
+Docker Tag:
+    Default: ${DOCKER_TAG}
+    If you want to change the docker tag, use the -t option.
+
+Options:
+    -h              Show usage.
+    -b              Build docker image.
+                    if image does not exist locally, it will build automatically.
+    -t {TAG_NAME}   Specify docker tag.
+                    default: ${DOCKER_TAG}
+__EOS__
+}
+
+
+#
+# Options
+#
+OPT_BUILD_MODE=
+OPT_DOCKER_TAG=${DOCKER_TAG}
+
+
+#
+# Parse args
+#
+parse_args() {
+    while getopts hbt: flag; do
+        case "${flag}" in
+            h )
+                usage
+                exit 0
+                ;;
+
+            b ) # Build docker image
+                OPT_BUILD_MODE='true'
+                ;;
+
+            t ) # Specify docker tag.
+                OPT_DOCKER_TAG=${OPTARG}
+                ;;
+
+            * )
+                usage
+                exit 0
+                ;;
+        esac
+    done
+}
+
+
+
+#------------------------------------------------------------------------------
+# Utils
+#------------------------------------------------------------------------------
+err() {
+    echo "Error: $@" 1>&2
+
+    usage
+    exit 1
+}
+
+
+# Search docker image with specify TAG from locally.
+# If found, returns the Image ID, otherwise it returns empty string.
+find_image() {
+    cmd="docker images -q ${1}"
+    echo "$(eval $cmd)"
+}
+
+
+
+#------------------------------------------------------------------------------
+# Scrapy Helper
+#------------------------------------------------------------------------------
+scrapy_exec() {
+    local docker_tag="$1"
+    shift 1
+
+    docker run --rm -it \
+        -v "$(pwd)/spiders":"/home/${DOCKER_USER_NAME}/spiders" \
+        -v "$(pwd)/outputs":"/home/${DOCKER_USER_NAME}/outputs" \
+        -t ${docker_tag} \
+        $@
+}
+
+
+scrapy_start_project() {
+    local docker_tag="$1"
+    local project_name="${2+$2}"
+    local project_path="${3+$3}"
+    if [ $# -le 3 ]; then
+        shift $#
+    else
+        shift 3
+    fi
+
+    # Show help
+    if [ -z "${project_name}" ] || [ "${project_name}" = '-h' ];
+    then
+        docker run --rm -t ${docker_tag} startproject -h
+        return
+    fi
+
+    # Setup project path.
+    local project_path_base="/home/${DOCKER_USER_NAME}/spiders"
+    if [ -n "${project_path}" ]; then
+        project_path="${project_path_base}/${project_path}"
+    else
+        project_path="${project_path_base}/${project_name}"
+    fi
+
+    # Create project.
+    scrapy_exec "${docker_tag}" startproject "${project_name}" "${project_path}"
+}
+
+
+scrapy_genspider() {
+    local docker_tag="$1"
+    local project_name="${2+$2}"
+    local site_url="${3+$3}"
+    #local project_path="${3+$3}"
+    if [ $# -le 3 ]; then
+        shift $#
+    else
+        shift 3
+    fi
+
+    # Show help
+    if [ "${project_name}" = '-h' ]; then
+        docker run --rm -t ${docker_tag} genspider -h
+        return
+    fi
+
+    # Check args
+    if [ -z "${project_name}" ] || [ -z "${site_url}" ];
+    then
+        err "No project name or site url."
+        return
+    fi
+
+    # Call gen-spider (entrypoint.sh)
+    scrapy_exec "${docker_tag}" gen-spider "${project_name}" "${site_url}"
+
+    echo ""
+    echo "Generated spider: ./spiders/${project_name}/${project_name}.py"
+}
+
+
+scrapy_runspider() {
+    local docker_tag="$1"
+    local spider_file_path="$2"
+    shift 2
+
+    # Setup output / log path
+    local spider_file_name="$(basename $spider_file_path)"
+    local spider_name="${spider_file_name%.*}"
+    #local log_path="/home/${DOCKER_USER_NAME}/outputs/${spider_name}.log"
+    local output_path="/home/${DOCKER_USER_NAME}/outputs/${spider_name}.json"
+
+    # Run scrapy.
+    scrapy_exec "${docker_tag}" runspider \
+        --output=${output_path} \
+        ${spider_file_path}
+}
+
+
+
+#------------------------------------------------------------------------------
+# Main process
+#------------------------------------------------------------------------------
+main() {
+    cd $(dirname $0)
+    parse_args $@
+    shift $(expr $OPTIND - 1)
+
+    # Build docker image.
+    if  [ -n "${OPT_BUILD_MODE}" ] || \
+        [ -z "$(find_image $OPT_DOCKER_TAG)" ];
+    then
+        cd ${DOCKER_CONTENT_DIR}
+        docker build -t ${OPT_DOCKER_TAG} .
+        cd ..
+    fi
+
+
+    # Run commands
+    local cmd="${1+$1}"
+    shift
+    case "${cmd}" in
+        'start-project' ) # DEPRECATED, use 'gen' instead.
+            scrapy_start_project "${OPT_DOCKER_TAG}" $@
+            ;;
+
+        'gen' )
+            scrapy_genspider "${OPT_DOCKER_TAG}" $@
+            ;;
+
+        'run' )
+            scrapy_runspider "${OPT_DOCKER_TAG}" $@
+            ;;
+
+        'exec' )
+            scrapy_exec "${OPT_DOCKER_TAG}" $@
+            ;;
+
+        'bash' )
+            docker run --rm -it \
+                -v "$(pwd)/spiders":"/home/${DOCKER_USER_NAME}/spiders" \
+                -v "$(pwd)/outputs":"/home/${DOCKER_USER_NAME}/outputs" \
+                --entrypoint /bin/bash \
+                -t ${OPT_DOCKER_TAG}
+            ;;
+
+        * )
+            err "Invalid command."
+            ;;
+    esac
+}
+
+main $@
+exit 0
+
